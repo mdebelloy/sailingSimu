@@ -15,37 +15,53 @@ from tqdm import tqdm
 class DiscreteStateConverter:
     """Converts continuous sailing states to a reduced state space focusing on gusts/lulls."""
 
-    def __init__(self, grid_size_x, grid_size_y, gust_threshold=16.0, lull_threshold=13.0, grid_resolution=10):
+    def __init__(self, sailing_env, grid_size_x, grid_size_y, gust_threshold=16.0, lull_threshold=13.0, strong_current_threshold=2.0, weak_current_threshold=0.5, grid_resolution=10):
+        self.sailing_env = sailing_env
         self.grid_size_x = grid_size_x
         self.grid_size_y = grid_size_y
         self.gust_threshold = gust_threshold  # High wind speed threshold
         self.lull_threshold = lull_threshold  # Low wind speed threshold
+        self.strong_current_threshold = strong_current_threshold  # Strong current threshold
+        self.weak_current_threshold = weak_current_threshold  # Weak current threshold
         self.grid_resolution= grid_resolution
 
         # Cache gust and lull locations
         self.gust_positions = []  # List of (x, y) locations with strong gusts
         self.lull_positions = []  # List of (x, y) locations with weak wind
 
-    def precompute_gusts_and_lulls(self, wind_grid):
+    def precompute_gusts_and_lulls(self, wind_grid, current_grid):
         """Identify gusts and lulls at exact points where wind speed is above or below the threshold."""
         self.gust_positions = []
         self.lull_positions = []
+        self.strong_current_positions = []
+        self.weak_current_positions = []
 
         for x in range(self.grid_size_x):
             for y in range(self.grid_size_y):
                 wind_speed, _ = wind_grid.get_wind_at_position(x, y)
-                if x == 24 and y == 0:
-                    print(f"WIND SPEED WHEN PRECOMPUTING GUSTS AND LULLS: {wind_speed}")
-                if wind_speed > self.gust_threshold:  # Strictly above the threshold
+                current_speed, _ = current_grid.get_current_at_position(x, y)
+
+                # Detect gusts and lulls
+                if wind_speed > self.gust_threshold:
                     self.gust_positions.append((x, y))
-                elif wind_speed < self.lull_threshold:  # Strictly below the threshold
+                elif wind_speed < self.lull_threshold:
                     self.lull_positions.append((x, y))
 
-        # Ensure gust and lull lists are not empty
+                # Detect strong and weak currents
+                if current_speed > self.strong_current_threshold:
+                    self.strong_current_positions.append((x, y))
+                elif current_speed < self.weak_current_threshold:
+                    self.weak_current_positions.append((x, y))
+
+        # Ensure lists are not empty to avoid errors
         if not self.gust_positions:
-            self.gust_positions.append((0, 0))  # Default gust position to avoid errors
+            self.gust_positions.append((0, 0))
         if not self.lull_positions:
-            self.lull_positions.append((self.grid_size_x - 1, self.grid_size_y - 1))  # Default lull position
+            self.lull_positions.append((self.grid_size_x - 1, self.grid_size_y - 1))
+        if not self.strong_current_positions:
+            self.strong_current_positions.append((0, 0))
+        if not self.weak_current_positions:
+            self.weak_current_positions.append((self.grid_size_x - 1, self.grid_size_y - 1))
 
     def get_nearest_gust_lull(self, x, y):
         """Find the nearest gust and lull to the given position."""
@@ -59,11 +75,41 @@ class DiscreteStateConverter:
 
         return gust_distance, lull_distance
 
+    def get_nearest_current(self, x, y):
+        """Find the nearest strong and weak current zone."""
+        nearest_strong_current = min(self.strong_current_positions, key=lambda p: (p[0] - x) ** 2 + (p[1] - y) ** 2,
+                                     default=None)
+        nearest_weak_current = min(self.weak_current_positions, key=lambda p: (p[0] - x) ** 2 + (p[1] - y) ** 2,
+                                   default=None)
+
+        strong_current_dist = ((nearest_strong_current[0] - x) ** 2 + (
+                    nearest_strong_current[1] - y) ** 2) ** 0.5 if nearest_strong_current else float('inf')
+        weak_current_dist = ((nearest_weak_current[0] - x) ** 2 + (
+                    nearest_weak_current[1] - y) ** 2) ** 0.5 if nearest_weak_current else float('inf')
+
+        return strong_current_dist, weak_current_dist
+
     def get_reduced_state(self, position, heading):
-        """Convert continuous state into a reduced representation."""
+        """Convert continuous state into a reduced representation including current direction."""
         x, y = position
         gust_dist, lull_dist = self.get_nearest_gust_lull(x, y)
-        return (round(x), round(y), round(heading % 360, -1), round(gust_dist, 1), round(lull_dist, 1))
+        strong_current_dist, weak_current_dist = self.get_nearest_current(x, y)
+
+        # Get current direction at this position
+        current_speed, current_dir = self.sailing_env.current_grid.get_current_at_position(x, y)
+
+        # Compute the angle between the boat's heading and the current direction
+        current_relative_angle = abs((heading - current_dir) % 360)
+        if current_relative_angle > 180:
+            current_relative_angle = 360 - current_relative_angle  # Convert to [0, 180]
+
+        return (
+            round(x), round(y),
+            round(heading % 360, -1),  # Round heading to nearest 10 degrees
+            round(gust_dist, 1), round(lull_dist, 1),
+            round(strong_current_dist, 1), round(weak_current_dist, 1),
+            round(current_relative_angle, -1)  # Round current-relative angle to nearest 10 degrees
+        )
 
 
 #########################
@@ -130,30 +176,43 @@ class SailingMCTS:
         self.state_converter = state_converter
         self.iterations = iterations
         self.exploration_weight = exploration_weight
-        self.state_converter.precompute_gusts_and_lulls(self.sailing_env.wind_grid)
+        self.state_converter.precompute_gusts_and_lulls(self.sailing_env.wind_grid, self.sailing_env.current_grid)
 
     def calculate_reward(self, state, next_state):
-        """Calculate reward based on distance to gusts/lulls and progress to goal."""
-        x1, y1, heading1, gust_dist1, lull_dist1 = state
-        x2, y2, heading2, gust_dist2, lull_dist2 = next_state
+        """Calculate reward based on wind, currents, and progress to goal."""
+        x1, y1, heading1, gust_dist1, lull_dist1, strong_current_dist1, weak_current_dist1, current_rel_angle1 = state
+        x2, y2, heading2, gust_dist2, lull_dist2, strong_current_dist2, weak_current_dist2, current_rel_angle2 = next_state
 
         goal_x, goal_y = self.sailing_env.goal_pos
-        dist1 = ((goal_x - x1) ** 2 + (goal_y - y1) ** 2) ** 0.5
-        dist2 = ((goal_x - x2) ** 2 + (goal_y - y2) ** 2) ** 0.5
+        dist1 = np.hypot(goal_x - x1, goal_y - y1)
+        dist2 = np.hypot(goal_x - x2, goal_y - y2)
 
-        progress_reward = 200.0 * (dist1 - dist2)  # Increased weight for moving forward
-        gust_reward = 100.0 / (gust_dist2 + 1e-3)  # Larger reward when closer to gust
-        lull_penalty = -100.0 / (lull_dist2 + 1e-3)  # Larger penalty when closer to lull
-        heading_penalty = -0.5 * abs(heading2 - heading1)  # Reduce unnecessary heading changes
+        progress_reward = 200.0 * (dist1 - dist2)  # Reward progress towards goal
+        gust_reward = 100.0 / (gust_dist2 + 1e-3)  # Encourage moving into gusts
+        lull_penalty = -100.0 / (lull_dist2 + 1e-3)  # Penalize moving into lulls
 
-        # Encourage sailing at optimal wind angles
+        # Encourage following strong currents
+        strong_current_reward = 80.0 / (strong_current_dist2 + 1e-3)
+        weak_current_penalty = -50.0 / (weak_current_dist2 + 1e-3)
+
+        # Wind penalty for bad angles
         wind_speed, wind_dir = self.sailing_env.wind_grid.get_wind_at_position(x2, y2)
         twa = abs((heading2 - wind_dir) % 360)
         if twa > 180:
             twa = 360 - twa
-        wind_angle_penalty = -20.0 if twa < self.sailing_env.polar_model.min_upwind_angle else 0  # Discourage sailing into no-go zone
+        wind_angle_penalty = -20.0 if twa < self.sailing_env.polar_model.min_upwind_angle else 0
 
-        return progress_reward + gust_reward + lull_penalty + heading_penalty + wind_angle_penalty
+        # **NEW: Reward/penalize alignment with current**
+        if current_rel_angle2 < 45:  # Favorable current (aligned within 45 degrees)
+            current_alignment_reward = 100.0 / (current_rel_angle2 + 1e-3)
+        elif current_rel_angle2 > 135:  # Opposing current (nearly opposite direction)
+            current_alignment_reward = -150.0 / (180 - current_rel_angle2 + 1e-3)
+        else:  # Neutral current (perpendicular)
+            current_alignment_reward = -50.0 / (90 - abs(current_rel_angle2 - 90) + 1e-3)
+
+        return (progress_reward + gust_reward + lull_penalty +
+                strong_current_reward + weak_current_penalty +
+                wind_angle_penalty + current_alignment_reward)
 
     def find_optimal_path(self, max_steps=100):
         """Find optimal path from start to goal."""
@@ -186,8 +245,6 @@ class SailingMCTS:
         for i in range(len(x)):
             for j in range(len(y)):
                 wind_speed, wind_dir = self.sailing_env.wind_grid.get_wind_at_position(i, j)
-                if i == 24 and j == 0:
-                    print(f"WIND SPEED WHEN VISUALIZING PATH: {wind_speed}")
                 wind_rad = np.radians(wind_dir)
                 U[i, j] = wind_speed * np.sin(wind_rad)
                 V[i, j] = wind_speed * np.cos(wind_rad)
@@ -320,11 +377,10 @@ class SailingMCTS:
         return max(root.children.items(), key=lambda x: x[1].visits)[0] if root.children else random.choice(
             list(root.untried_actions))
 
-
     def simulate_action(self, state, action):
         """Simulate taking an action from the current state using wind, current, and polar model."""
-        x, y, heading, _, _ = state
-        heading = (heading + self.sailing_env.actions[action]) % 360
+        x, y, heading, _, _, _, _, _ = state
+        heading = (heading + self.sailing_env.actions[action]) % 360  # Apply action (change heading)
 
         # Get wind data
         wind_speed, wind_dir = self.sailing_env.wind_grid.get_wind_at_position(x, y)
@@ -336,20 +392,25 @@ class SailingMCTS:
         boat_speed = self.sailing_env.polar_model.get_boat_speed(true_wind_angle, wind_speed)
 
         # Get current data
+        current_speed, current_dir = 0.0, 0.0
         if self.sailing_env.use_currents:
             current_speed, current_dir = self.sailing_env.current_grid.get_current_at_position(x, y)
-            current_x, current_y = self.sailing_env.current_grid.get_current_vector_at_position(x, y)
-        else:
-            current_x, current_y = 0.0, 0.0
 
-        # Calculate movement
+        # Convert angles to radians
         heading_rad = np.radians(heading)
+        current_rad = np.radians(current_dir)
+
+        # Compute boat velocity components
         boat_dx = boat_speed * np.sin(heading_rad)
         boat_dy = boat_speed * np.cos(heading_rad)
 
-        # Combine boat movement with current
-        new_x = max(0, min(self.sailing_env.grid_size_x - 1, x + round(boat_dx + current_x)))
-        new_y = max(0, min(self.sailing_env.grid_size_y - 1, y + round(boat_dy + current_y)))
+        # Compute current velocity components
+        current_dx = current_speed * np.sin(current_rad)
+        current_dy = current_speed * np.cos(current_rad)
+
+        # Combine boat movement with current influence
+        new_x = max(0, min(self.sailing_env.grid_size_x - 1, x + round(boat_dx + current_dx)))
+        new_y = max(0, min(self.sailing_env.grid_size_y - 1, y + round(boat_dy + current_dy)))
 
         return self.state_converter.get_reduced_state((new_x, new_y), heading)
 
@@ -362,6 +423,7 @@ def optimize_sailing_path(sailing_env, mcts_iterations=10000):
     """Find optimal sailing path using MCTS"""
     print("Initializing discretized state converter...")
     state_converter = DiscreteStateConverter(
+        sailing_env,
         sailing_env.grid_size_x,
         sailing_env.grid_size_y
     )
