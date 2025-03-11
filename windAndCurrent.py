@@ -103,7 +103,7 @@ class WindGrid:
         
         # Ensure minimum wind speed
         self.wind_speed = np.maximum(self.wind_speed, self.base_wind_speed * 0.5)
-        
+        print(f"WIND SPEED: {self.wind_speed[0, 24]}")
         # Normalize wind directions to 0-360
         self.wind_dir = self.wind_dir % 360
     

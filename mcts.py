@@ -15,7 +15,7 @@ from tqdm import tqdm
 class DiscreteStateConverter:
     """Converts continuous sailing states to a reduced state space focusing on gusts/lulls."""
 
-    def __init__(self, grid_size_x, grid_size_y, gust_threshold=15.0, lull_threshold=13.0, grid_resolution=10):
+    def __init__(self, grid_size_x, grid_size_y, gust_threshold=16.0, lull_threshold=13.0, grid_resolution=10):
         self.grid_size_x = grid_size_x
         self.grid_size_y = grid_size_y
         self.gust_threshold = gust_threshold  # High wind speed threshold
@@ -34,8 +34,9 @@ class DiscreteStateConverter:
         for x in range(self.grid_size_x):
             for y in range(self.grid_size_y):
                 wind_speed, _ = wind_grid.get_wind_at_position(x, y)
+                if x == 24 and y == 0:
+                    print(f"WIND SPEED WHEN PRECOMPUTING GUSTS AND LULLS: {wind_speed}")
                 if wind_speed > self.gust_threshold:  # Strictly above the threshold
-                    print(f"Wind speed at ({x}, {y}) ABOVE THRESHOLD: {wind_speed}")
                     self.gust_positions.append((x, y))
                 elif wind_speed < self.lull_threshold:  # Strictly below the threshold
                     self.lull_positions.append((x, y))
@@ -141,8 +142,8 @@ class SailingMCTS:
         dist2 = ((goal_x - x2) ** 2 + (goal_y - y2) ** 2) ** 0.5
 
         progress_reward = 200.0 * (dist1 - dist2)  # Increased weight for moving forward
-        gust_reward = -100.0 * gust_dist2  # Less extreme gust reward
-        lull_penalty = 100.0 * lull_dist2  # Still encourage avoiding lulls
+        gust_reward = 100.0 / (gust_dist2 + 1e-3)  # Larger reward when closer to gust
+        lull_penalty = -100.0 / (lull_dist2 + 1e-3)  # Larger penalty when closer to lull
         heading_penalty = -0.5 * abs(heading2 - heading1)  # Reduce unnecessary heading changes
 
         # Encourage sailing at optimal wind angles
@@ -156,7 +157,7 @@ class SailingMCTS:
 
     def find_optimal_path(self, max_steps=100):
         """Find optimal path from start to goal."""
-        state = self.sailing_env.reset()
+        # state = self.sailing_env.reset()
         path = [tuple(self.sailing_env.position)]
 
         for _ in range(max_steps):
@@ -168,7 +169,7 @@ class SailingMCTS:
 
         return path
 
-    def visualize_optimal_path(self, path):
+    def visualize_optimal_path_wind(self, path):
         """Visualize optimal path on the environment"""
         fig, ax = plt.subplots(figsize=(10, 10))
 
@@ -185,11 +186,12 @@ class SailingMCTS:
         for i in range(len(x)):
             for j in range(len(y)):
                 wind_speed, wind_dir = self.sailing_env.wind_grid.get_wind_at_position(i, j)
+                if i == 24 and j == 0:
+                    print(f"WIND SPEED WHEN VISUALIZING PATH: {wind_speed}")
                 wind_rad = np.radians(wind_dir)
                 U[i, j] = wind_speed * np.sin(wind_rad)
                 V[i, j] = wind_speed * np.cos(wind_rad)
-                print(f"Wind speed at ({i}, {j}): {wind_speed:.2f}")
-                speed[i, j] = wind_speed
+                speed[j, i] = wind_speed
 
         # Plot wind as background color
         c = ax.pcolormesh(X, Y, speed, cmap='viridis', alpha=0.3)
@@ -237,6 +239,61 @@ class SailingMCTS:
         ax.legend()
 
         plt.savefig('optimal_sailing_path.png', dpi=300, bbox_inches='tight')
+        plt.show()
+
+    def visualize_optimal_path_current(self, path):
+        """Visualize optimal sailing path with a current field heatmap as background."""
+        fig, ax = plt.subplots(figsize=(10, 10))
+
+        # Get grid size
+        x = np.arange(0, self.sailing_env.grid_size_x, 1)
+        y = np.arange(0, self.sailing_env.grid_size_y, 1)
+        X, Y = np.meshgrid(x, y)
+
+        # Collect current data
+        U = np.zeros_like(X, dtype=float)  # X-component of current
+        V = np.zeros_like(Y, dtype=float)  # Y-component of current
+        speed = np.zeros_like(X, dtype=float)  # Current speed magnitude
+
+        for i in range(len(x)):
+            for j in range(len(y)):
+                current_speed, current_dir = self.sailing_env.current_grid.get_current_at_position(i, j)
+                current_x, current_y = self.sailing_env.current_grid.get_current_vector_at_position(i, j)
+                U[j, i] = current_x  # X-component
+                V[j, i] = current_y  # Y-component
+                speed[j, i] = current_speed  # Current magnitude
+
+        # Plot current speed as a heatmap
+        c = ax.pcolormesh(X, Y, speed, cmap='viridis', shading='auto', alpha=0.7)
+        plt.colorbar(c, ax=ax, label='Current Speed (knots)')
+
+        # Overlay current direction with arrows
+        subsample = 4  # Reduce arrow density
+        ax.quiver(X[::subsample, ::subsample], Y[::subsample, ::subsample],
+                  U[::subsample, ::subsample], V[::subsample, ::subsample],
+                  scale=50, color='white', alpha=0.8, width=0.002)
+
+        # Plot start and goal
+        ax.plot(self.sailing_env.start_pos[0], self.sailing_env.start_pos[1], 'go', markersize=10, label='Start')
+        ax.plot(self.sailing_env.goal_pos[0], self.sailing_env.goal_pos[1], 'ro', markersize=10, label='Goal')
+        circle = Circle(self.sailing_env.goal_pos, self.sailing_env.goal_radius, fill=False, color='r', linestyle='--')
+        ax.add_patch(circle)
+
+        # Plot optimal path
+        path_x, path_y = zip(*path)
+        ax.plot(path_x, path_y, 'k-', linewidth=2, label='Optimal Path')
+
+
+        # Set axis limits and labels
+        ax.set_xlim(0, self.sailing_env.grid_size_x)
+        ax.set_ylim(0, self.sailing_env.grid_size_y)
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_title('Optimal Sailing Path with Current Field Heatmap')
+        ax.legend()
+
+        # Save and show plot
+        plt.savefig('optimal_sailing_path_currents.png', dpi=300, bbox_inches='tight')
         plt.show()
 
     def get_action(self, env):
@@ -327,6 +384,6 @@ def optimize_sailing_path(sailing_env, mcts_iterations=10000):
     
     # Visualize path
     print("Visualizing optimal path...")
-    mcts.visualize_optimal_path(path)
+    mcts.visualize_optimal_path_current(path)
     
     return path
