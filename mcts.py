@@ -17,7 +17,7 @@ from tqdm import tqdm
 class DiscreteStateConverter:
     """Converts continuous sailing states to a reduced state space focusing on gusts/lulls."""
 
-    def __init__(self, sailing_env, grid_size_x, grid_size_y, gust_threshold=16.0, lull_threshold=13.0, strong_current_threshold=2.0, weak_current_threshold=0.5, grid_resolution=10):
+    def __init__(self, sailing_env, grid_size_x, grid_size_y, gust_threshold=15.0, lull_threshold=12.0, strong_current_threshold=2.0, weak_current_threshold=0.5, grid_resolution=10):
         self.sailing_env = sailing_env
         self.grid_size_x = grid_size_x
         self.grid_size_y = grid_size_y
@@ -199,7 +199,6 @@ class SailingMCTS:
 
             # Large reward for reaching goal radius in next state
         if dist2 < self.sailing_env.goal_radius:
-            print("REACHED GOAL REWARD")
             goal_reward = 1000
         else: goal_reward = 0
 
