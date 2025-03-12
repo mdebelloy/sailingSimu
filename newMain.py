@@ -35,16 +35,17 @@ def run_optimization():
 
     # Find optimal path
     # Adjusted parameters for better results:
-    path = optimize_sailing_path(
+    path, elapsed_time, time_out = optimize_sailing_path(
         env,
         mcts_iterations=10000  # More iterations for better planning
     )
 
-    return env, path
+    return env, path, elapsed_time, time_out
 
-
+def monte_carlo(iters=1000):
+    pass
 if __name__ == "__main__":
-    env, path = run_optimization()
+    env, path, elapsed_time, time_out = run_optimization()
 
     # Print path statistics
     start_pos = env.start_pos
@@ -63,3 +64,7 @@ if __name__ == "__main__":
     print(f"Straight-line distance: {straight_dist:.2f}")
     print(f"Actual path distance: {total_path_dist:.2f}")
     print(f"Path efficiency: {straight_dist / total_path_dist:.2%}")
+    if time_out:
+        print("Did not reach goal")
+    else:
+        print("Reached goal")

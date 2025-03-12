@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from collections import defaultdict
 import heapq
+import os
+import re
 from tqdm import tqdm
 
 #########################
@@ -188,12 +190,18 @@ class SailingMCTS:
         dist2 = np.hypot(goal_x - x2, goal_y - y2)
 
         progress_reward = 200.0 * (dist1 - dist2)  # Reward progress towards goal
-        gust_reward = 100.0 / (gust_dist2 + 1e-3)  # Encourage moving into gusts
-        lull_penalty = -100.0 / (lull_dist2 + 1e-3)  # Penalize moving into lulls
+        proximity_reward = 200 / (dist2 + 1)
+        gust_reward = 80.0 / (gust_dist2 + 1)  # Encourage moving into gusts
+        lull_penalty = -80.0 / (lull_dist2 + 1)  # Penalize moving into lulls
+
+        # Large reward for reaching goal radius in next state
+        if dist2 < self.sailing_env.goal_radius:
+            goal_reward = 1000
+        else: goal_reward = 0
 
         # Encourage following strong currents
-        strong_current_reward = 80.0 / (strong_current_dist2 + 1e-3)
-        weak_current_penalty = -50.0 / (weak_current_dist2 + 1e-3)
+        strong_current_reward = 80.0 / (strong_current_dist2 + 1)
+        weak_current_penalty = -80.0 / (weak_current_dist2 + 1)
 
         # Wind penalty for bad angles
         wind_speed, wind_dir = self.sailing_env.wind_grid.get_wind_at_position(x2, y2)
@@ -204,30 +212,51 @@ class SailingMCTS:
 
         # **NEW: Reward/penalize alignment with current**
         if current_rel_angle2 < 45:  # Favorable current (aligned within 45 degrees)
-            current_alignment_reward = 100.0 / (current_rel_angle2 + 1e-3)
+            current_alignment_reward = 80.0 / (current_rel_angle2 + 1)
         elif current_rel_angle2 > 135:  # Opposing current (nearly opposite direction)
-            current_alignment_reward = -150.0 / (180 - current_rel_angle2 + 1e-3)
+            current_alignment_reward = -80.0 / (180 - current_rel_angle2 + 1)
         else:  # Neutral current (perpendicular)
-            current_alignment_reward = -50.0 / (90 - abs(current_rel_angle2 - 90) + 1e-3)
+            current_alignment_reward = -90.0 / (90 - abs(current_rel_angle2 - 90) + 1)
 
-        return (progress_reward + gust_reward + lull_penalty +
-                strong_current_reward + weak_current_penalty +
-                wind_angle_penalty + current_alignment_reward)
-
+        return (progress_reward + gust_reward + proximity_reward +
+                strong_current_reward + weak_current_penalty + goal_reward +
+                + wind_angle_penalty + lull_penalty + current_alignment_reward)
     def find_optimal_path(self, max_steps=100):
         """Find optimal path from start to goal."""
-        # state = self.sailing_env.reset()
+        time_out = False
         path = [tuple(self.sailing_env.position)]
 
-        for _ in range(max_steps):
+        for i in range(max_steps):
             action_idx = self.get_action(self.sailing_env)
             state, reward, done, _ = self.sailing_env.step(action_idx)
             path.append(tuple(self.sailing_env.position))
             if done:
                 break
+            if i == max_steps - 1:
+                time_out = True
+        return path, time_out
 
-        return path
+    def get_next_filename(self, directory, base_filename):
+        """Generate a new filename with sequential numbering in the given directory."""
+        os.makedirs(directory, exist_ok=True)  # Ensure directory exists
 
+        # Get all files in the directory
+        existing_files = os.listdir(directory)
+
+        # Regex to find existing numbered files (e.g., optimal_sailing_path_1.png)
+        pattern = re.compile(rf"^{base_filename}_(\d+)\.png$")
+
+        # Extract numbers from filenames
+        existing_numbers = []
+        for filename in existing_files:
+            match = pattern.match(filename)
+            if match:
+                existing_numbers.append(int(match.group(1)))
+
+        # Determine the next available number
+        next_number = max(existing_numbers, default=0) + 1
+        new_filename = f"{base_filename}_{next_number}.png"
+        return os.path.join(directory, new_filename)
     def visualize_optimal_path_wind(self, path):
         """Visualize optimal path on the environment"""
         fig, ax = plt.subplots(figsize=(10, 10))
@@ -295,8 +324,11 @@ class SailingMCTS:
         ax.set_title('Optimal Sailing Path with Wind Field')
         ax.legend()
 
-        plt.savefig('optimal_sailing_path.png', dpi=300, bbox_inches='tight')
-        plt.show()
+        save_dir = "monte_carlo_images"
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = self.get_next_filename(save_dir, "optimal_path_wind")
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Saved figure to {save_path}")
 
     def visualize_optimal_path_current(self, path):
         """Visualize optimal sailing path with a current field heatmap as background."""
@@ -350,8 +382,11 @@ class SailingMCTS:
         ax.legend()
 
         # Save and show plot
-        plt.savefig('optimal_sailing_path_currents.png', dpi=300, bbox_inches='tight')
-        plt.show()
+        save_dir = "monte_carlo_images"
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = self.get_next_filename(save_dir, "optimal_path_current")
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Saved figure to {save_path}")
 
     def get_action(self, env):
         """Run MCTS and return the best action for the current state."""
@@ -438,7 +473,7 @@ def optimize_sailing_path(sailing_env, mcts_iterations=10000):
     
     print("Finding optimal path...")
     start_time = time.time()
-    path = mcts.find_optimal_path()
+    path, time_out = mcts.find_optimal_path()
     elapsed_time = time.time() - start_time
     
     print(f"Path found in {elapsed_time:.2f} seconds")
@@ -447,5 +482,6 @@ def optimize_sailing_path(sailing_env, mcts_iterations=10000):
     # Visualize path
     print("Visualizing optimal path...")
     mcts.visualize_optimal_path_current(path)
+    mcts.visualize_optimal_path_wind(path)
     
-    return path
+    return path, elapsed_time, time_out
