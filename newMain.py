@@ -18,8 +18,8 @@ def run_optimization():
         grid_size_x=grid_size,
         grid_size_y=grid_size,
         polar_model=polar_model,
-        start_pos=(5, 5),
-        goal_pos=(35, 35),  # Opposite corner
+        start_pos=(2.5, 2.5),
+        goal_pos=(37.5, 37.5),  # Opposite corner
         use_currents=True,
         base_current_speed=1.0,
         base_current_dir=90,  # Current flowing east
@@ -28,7 +28,7 @@ def run_optimization():
     )
 
     # Manually set a larger goal radius to make it easier to reach
-    env.goal_radius = 3.0
+    env.goal_radius = 4.0
 
     # Reset to initialize
     env.reset()

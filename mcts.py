@@ -186,16 +186,20 @@ class SailingMCTS:
         x2, y2, heading2, gust_dist2, lull_dist2, strong_current_dist2, weak_current_dist2, current_rel_angle2 = next_state
 
         goal_x, goal_y = self.sailing_env.goal_pos
-        dist1 = np.hypot(goal_x - x1, goal_y - y1)
-        dist2 = np.hypot(goal_x - x2, goal_y - y2)
+        dist1 = (goal_x - x1, goal_y - y1)
+        dist1 = np.sqrt((goal_x - x1)**2 + (goal_y - y1)**2)
+        dist2 = np.sqrt((goal_x - x2)** 2 + (goal_y - y2)**2)
 
         progress_reward = 200.0 * (dist1 - dist2)  # Reward progress towards goal
-        proximity_reward = 200 / (dist2 + 1)
+        proximity_reward = (200 / dist2)
         gust_reward = 80.0 / (gust_dist2 + 1)  # Encourage moving into gusts
         lull_penalty = -80.0 / (lull_dist2 + 1)  # Penalize moving into lulls
 
-        # Large reward for reaching goal radius in next state
+        near_goal_penalty = 0
+
+            # Large reward for reaching goal radius in next state
         if dist2 < self.sailing_env.goal_radius:
+            print("REACHED GOAL REWARD")
             goal_reward = 1000
         else: goal_reward = 0
 
@@ -218,9 +222,12 @@ class SailingMCTS:
         else:  # Neutral current (perpendicular)
             current_alignment_reward = -90.0 / (90 - abs(current_rel_angle2 - 90) + 1)
 
+        reward = (progress_reward + gust_reward + proximity_reward +
+                strong_current_reward + weak_current_penalty + goal_reward +
+                + wind_angle_penalty + lull_penalty + current_alignment_reward + near_goal_penalty)
         return (progress_reward + gust_reward + proximity_reward +
                 strong_current_reward + weak_current_penalty + goal_reward +
-                + wind_angle_penalty + lull_penalty + current_alignment_reward)
+                + wind_angle_penalty + lull_penalty + current_alignment_reward + near_goal_penalty)
     def find_optimal_path(self, max_steps=100):
         """Find optimal path from start to goal."""
         time_out = False
@@ -234,6 +241,7 @@ class SailingMCTS:
                 break
             if i == max_steps - 1:
                 time_out = True
+                print(f"Goal radius: {self.sailing_env.goal_radius}")
         return path, time_out
 
     def get_next_filename(self, directory, base_filename):
@@ -409,8 +417,10 @@ class SailingMCTS:
                 node.update(reward)
                 node = node.parent
 
-        return max(root.children.items(), key=lambda x: x[1].visits)[0] if root.children else random.choice(
+        action = max(root.children.items(), key=lambda x: x[1].visits)[0] if root.children else random.choice(
             list(root.untried_actions))
+
+        return action
 
     def simulate_action(self, state, action):
         """Simulate taking an action from the current state using wind, current, and polar model."""

@@ -462,9 +462,11 @@ class SailingEnv:
         
         if distance_to_goal <= self.goal_radius:
             # Reward for reaching goal
-            reward = 100
+            reward = 1000
             done = True
             return self._get_state(), reward, done, {"reason": "goal_reached"}
+        else:
+            print(f"Distance: {distance_to_goal}")
         
         # Check for tack or gybe
         old_twa = (self.prev_heading - wind_dir) % 360
